@@ -41,6 +41,7 @@ type Store struct {
 	Idle     time.Duration // default 30 min
 	Absolute time.Duration // default 8 h
 	PerUser  int           // most live sessions per subject (default 20)
+	Max      int           // most live sessions in all (default 100000; #6)
 	Now      func() time.Time
 }
 
@@ -99,6 +100,23 @@ func (s *Store) Create(subject string) *Session {
 		delete(s.byID, mine[oldest].ID)
 		mine = append(mine[:oldest], mine[oldest+1:]...)
 	}
+	// the overall cap: past it, the sweep first, then the oldest sessions go
+	max := s.Max
+	if max <= 0 {
+		max = 100000
+	}
+	if len(s.byID) >= max {
+		s.sweepLocked(now)
+	}
+	for len(s.byID) >= max {
+		var oldest *Session
+		for _, x := range s.byID {
+			if oldest == nil || x.created.Before(oldest.created) {
+				oldest = x
+			}
+		}
+		delete(s.byID, oldest.ID)
+	}
 	x := &Session{ID: token(), Subject: subject, CSRF: token(), created: now, lastSeen: now}
 	s.byID[x.ID] = x
 	cp := *x
@@ -135,6 +153,26 @@ func CheckCSRF(x *Session, presented string) error {
 		return ErrCSRF
 	}
 	return nil
+}
+
+// Sweep removes every expired session, presented again or not, and returns
+// how many went. serve runs it periodically.
+func (s *Store) Sweep() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sweepLocked(s.now())
+}
+
+func (s *Store) sweepLocked(now time.Time) int {
+	idle, abs, _ := s.limits()
+	n := 0
+	for id, x := range s.byID {
+		if now.Sub(x.lastSeen) > idle || now.Sub(x.created) > abs {
+			delete(s.byID, id)
+			n++
+		}
+	}
+	return n
 }
 
 // Destroy removes a session.
