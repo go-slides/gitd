@@ -264,28 +264,8 @@ func (s *Server) grantedOn(subject, forgeName string) bool {
 	return false
 }
 
-// slug is the user's branch directory.
-func (s *Server) slug(subject string) string {
-	if u := s.cfg.Users[subject]; u.Slug != "" {
-		return u.Slug
-	}
-	var b strings.Builder
-	for _, r := range strings.ToLower(subject) {
-		if r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
-			b.WriteRune(r)
-		} else if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
-			b.WriteByte('-')
-		}
-		if b.Len() >= 32 {
-			break
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		out = "user"
-	}
-	return out
-}
+// slug is the user's branch directory (see branchDir).
+func (s *Server) slug(subject string) string { return branchDir(subject, s.cfg.Users[subject].Slug) }
 
 // remoteFor is subject's remote for forge and repo, after the grant check.
 func (s *Server) remoteFor(ctx context.Context, c *call, forgeName, repo string) (remote.Remote, int, string) {
