@@ -9,6 +9,7 @@ import (
 	"os"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Entry is one action.
@@ -42,6 +43,21 @@ func Open(path string) (*Log, error) {
 // To writes to w (tests).
 func To(w io.Writer) *Log { return &Log{w: w} }
 
+// MaxField bounds every text field of an entry, so a line stays under 2 KiB
+// whatever a caller passes in (go-slides/gitd#2).
+const MaxField = 256
+
+func bound(s string) string {
+	if len(s) <= MaxField {
+		return s
+	}
+	cut := MaxField
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
 // Write appends e.
 func (l *Log) Write(e Entry) {
 	if l == nil {
@@ -49,6 +65,9 @@ func (l *Log) Write(e Entry) {
 	}
 	if e.Time.IsZero() {
 		e.Time = time.Now().UTC()
+	}
+	for _, f := range []*string{&e.Subject, &e.Action, &e.Forge, &e.Repo, &e.Branch, &e.Outcome, &e.Remote} {
+		*f = bound(*f)
 	}
 	b, _ := json.Marshal(e)
 	l.mu.Lock()

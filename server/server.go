@@ -254,6 +254,16 @@ func (s *Server) grant(subject, forgeName, repo string) bool {
 	return false
 }
 
+// grantedOn reports whether subject has any repository on forge.
+func (s *Server) grantedOn(subject, forgeName string) bool {
+	for _, r := range s.cfg.Users[subject].Repos {
+		if strings.HasPrefix(r, forgeName+":") {
+			return true
+		}
+	}
+	return false
+}
+
 // slug is the user's branch directory.
 func (s *Server) slug(subject string) string {
 	if u := s.cfg.Users[subject]; u.Slug != "" {
@@ -279,11 +289,16 @@ func (s *Server) slug(subject string) string {
 
 // remoteFor is subject's remote for forge and repo, after the grant check.
 func (s *Server) remoteFor(ctx context.Context, c *call, forgeName, repo string) (remote.Remote, int, string) {
-	c.entry.Forge, c.entry.Repo = forgeName, repo
 	fc, ok := s.cfg.Forges[forgeName]
 	if !ok || !s.grant(c.subject, forgeName, repo) {
+		// nothing the client sent reaches the audit before it is granted
+		// (go-slides/gitd#2): only a configured forge's name
+		if ok {
+			c.entry.Forge = forgeName
+		}
 		return nil, http.StatusForbidden, "denied"
 	}
+	c.entry.Forge, c.entry.Repo = forgeName, repo // both from the configuration now
 	var tok secret.Token
 	switch fc.Auth {
 	case "github-app":
@@ -357,10 +372,15 @@ func (s *Server) handleCredential(_ context.Context, c *call, dec *json.Decoder)
 	tok := secret.New(q.Token)
 	q.Token = ""
 	defer tok.Forget()
-	c.entry.Forge = q.Forge
 	fc, ok := s.cfg.Forges[q.Forge]
 	if !ok || fc.Auth != "user-token" {
 		return c.deny(http.StatusBadRequest, "no-such-forge")
+	}
+	c.entry.Forge = q.Forge // a configured name, so bounded
+	// a user with no repository on this forge has nothing to store a token for
+	// (go-slides/gitd#2): the vault takes writes from granted users only
+	if !s.grantedOn(c.subject, q.Forge) {
+		return c.deny(http.StatusForbidden, "denied")
 	}
 	if err := s.vault.Put(c.subject, q.Forge, tok); err != nil {
 		return c.deny(http.StatusBadRequest, "refused")
@@ -375,7 +395,9 @@ func (s *Server) handleCredentialDelete(_ context.Context, c *call, dec *json.De
 	if err := dec.Decode(&q); err != nil {
 		return c.deny(http.StatusBadRequest, "bad-request")
 	}
-	c.entry.Forge = q.Forge
+	if _, ok := s.cfg.Forges[q.Forge]; ok {
+		c.entry.Forge = q.Forge
+	}
 	if err := s.vault.Delete(c.subject, q.Forge); err != nil {
 		return c.deny(http.StatusBadRequest, "refused")
 	}

@@ -33,6 +33,12 @@ func TestAppendOneLinePerEntry(t *testing.T) {
 	if st.Mode().Perm() != 0o600 {
 		t.Fatalf("mode %v", st.Mode().Perm())
 	}
+	// every field is bounded, so a line is too, and a cut never splits a rune
+	var big bytes.Buffer
+	To(&big).Write(Entry{Subject: string(bytes.Repeat([]byte("é"), 5000)), Repo: string(bytes.Repeat([]byte("r"), 1<<20)), Remote: string(bytes.Repeat([]byte("1"), 1<<16))})
+	if big.Len() > 2048 || !json.Valid(bytes.TrimSpace(big.Bytes())) {
+		t.Fatalf("an entry of huge fields wrote %d bytes", big.Len())
+	}
 	if _, err := Open(filepath.Join(p, "nope")); err == nil {
 		t.Fatal("a bad path")
 	}
