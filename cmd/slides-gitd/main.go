@@ -147,6 +147,19 @@ func run(ctx context.Context, out io.Writer, srv *server.Server, cfg *server.Con
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- hs.ListenAndServe() }()
+	// expired sessions nobody presents again are swept (go-slides/gitd#6)
+	go func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				srv.Sessions().Sweep()
+			}
+		}
+	}()
 	fmt.Fprintf(out, "slides-gitd listening on %s\n", cfg.Listen)
 	select {
 	case err := <-errc:
