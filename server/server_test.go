@@ -337,7 +337,7 @@ func TestWritesOnlyToTheUsersOwnBranches(t *testing.T) {
 	b := hh.login("bob")
 	base := remote.Base{Forge: "gitlab", Repo: "g/p", Ref: "main", Commit: strings.Repeat("a", 40)}
 	w := hh.post(b, "/api/git/propose", proposeReq{Forge: "gitlab", Base: base, Files: remote.Files{"deck.md": []byte("x")}, Title: "Fix the intro"})
-	if w.Code != 200 || len(hh.proposed) != 1 || !strings.HasPrefix(hh.proposed[0].Branch, "slides/bob/fix-the-intro-") {
+	if w.Code != 200 || len(hh.proposed) != 1 || !strings.HasPrefix(hh.proposed[0].Branch, "slides/"+hh.srv.slug("bob")+"/fix-the-intro-") || !strings.HasPrefix(hh.srv.slug("bob"), "bob-") {
 		t.Fatalf("propose: %d %s %+v", w.Code, w.Body, hh.proposed)
 	}
 	if !strings.Contains(hh.proposed[0].Body, "Proposed by bob") {
@@ -351,7 +351,7 @@ func TestWritesOnlyToTheUsersOwnBranches(t *testing.T) {
 	// Alice's slug is derived; it cannot be bob's.
 	a := hh.login("alice")
 	_ = hh.post(a, "/api/git/propose", proposeReq{Forge: "gitlab", Base: base, Files: remote.Files{"deck.md": []byte("y")}, Title: "x"})
-	if !strings.HasPrefix(hh.proposed[1].Branch, "slides/alice/") {
+	if !strings.HasPrefix(hh.proposed[1].Branch, "slides/alice-") {
 		t.Fatalf("alice's branch %q", hh.proposed[1].Branch)
 	}
 	if hh.srv.slug("../Évil User!") != "evil-user" && hh.srv.slug("../Évil User!") == "" {

@@ -2,12 +2,15 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/netip"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/go-browserhttp/browsergit/remote"
 )
@@ -64,6 +67,36 @@ type User struct {
 	Slug string `json:"slug,omitempty"`
 	// Repos are "forge:owner/name" the user may load from and propose to.
 	Repos []string `json:"repos"`
+}
+
+// branchDir is the directory a subject's branches go in:
+// slides/<readable>-<hash>/. The readable part is the configured slug, or one
+// derived from the subject (at most 24 characters, so the longest branch stays
+// under the 100-character bound). It alone is not unique — alice.smith and
+// alice-smith derive the same, and a configured name can copy a derived one —
+// so ten hex digits of SHA-256(subject) follow it (go-slides/gitd#3), and
+// LoadConfig refuses two configured users whose directories coincide.
+func branchDir(subject, configured string) string {
+	readable := configured
+	if readable == "" {
+		var b strings.Builder
+		for _, r := range strings.ToLower(subject) {
+			if b.Len() >= 24 {
+				break
+			}
+			if r < 128 && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
+				b.WriteRune(r)
+			} else if b.Len() > 0 && !strings.HasSuffix(b.String(), "-") {
+				b.WriteByte('-')
+			}
+		}
+		readable = strings.Trim(b.String(), "-")
+		if readable == "" {
+			readable = "user"
+		}
+	}
+	h := sha256.Sum256([]byte("slides-gitd/branch/" + subject))
+	return readable + "-" + hex.EncodeToString(h[:5])
 }
 
 // LoadConfig reads and checks path.
@@ -135,6 +168,7 @@ func (c *Config) check() error {
 			return fmt.Errorf("config: forge %s: auth %q", name, f.Auth)
 		}
 	}
+	slugs, dirs := map[string]string{}, map[string]string{}
 	for sub, u := range c.Users {
 		if sub == "" {
 			return errors.New("config: empty subject")
@@ -142,6 +176,17 @@ func (c *Config) check() error {
 		if u.Slug != "" && !slugRe.MatchString(u.Slug) {
 			return fmt.Errorf("config: user %s: slug %q", sub, u.Slug)
 		}
+		if u.Slug != "" {
+			if other, dup := slugs[u.Slug]; dup {
+				return fmt.Errorf("config: users %s and %s both have the slug %q", other, sub, u.Slug)
+			}
+			slugs[u.Slug] = sub
+		}
+		d := branchDir(sub, u.Slug)
+		if other, dup := dirs[d]; dup {
+			return fmt.Errorf("config: users %s and %s would share slides/%s/", other, sub, d)
+		}
+		dirs[d] = sub
 		for _, r := range u.Repos {
 			f, repo, ok := strings.Cut(r, ":")
 			if !ok {

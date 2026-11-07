@@ -23,7 +23,7 @@ browser ──https──▶ Caddy ── forward_auth ──▶ oauth2-proxy �
 | `POST /api/git/credential` | Stores the user's own token for a `user-token` forge, sealed. It is never sent back. |
 | `POST /api/git/credential/delete` | Forgets it. |
 | `POST /api/git/load` | `{forge, repo, ref, dir}` → `{files, base}` |
-| `POST /api/git/propose` | `{forge, base, files, title, body}` → `{branch, url}`. The **server** names the branch: `slides/<user>/<title>-<time>`. |
+| `POST /api/git/propose` | `{forge, base, files, title, body}` → `{branch, url}`. The **server** names the branch: `slides/<user>-<hash>/<title>-<time>`. |
 | `POST /api/git/refresh` | `{forge, base}` → `{files, base}` (`files` is null when nothing moved). |
 
 ## Security
@@ -52,7 +52,10 @@ Each point has a test that fails if it is broken.
   - the `X-CSRF-Token` header.
 - **Deny by default.** A subject reaches only the `forge:owner/name` entries the
   configuration grants it.
-- **Writes only to `slides/<user>/*`.** The branch name is the server's, and a
+- **Writes only to `slides/<user>-<hash>/*`.** `<user>` is the configured slug or
+  one derived from the subject, and `<hash>` is 10 hex digits of
+  SHA-256(subject), so no two subjects share a directory. Startup refuses
+  duplicate configured slugs and coinciding directories. The branch name is the server's, and a
   request field naming a branch is an unknown field, refused. The forge
   adapter enforces the prefix again and never writes to an existing or
   default branch.
