@@ -8,6 +8,7 @@
 package session
 
 import (
+	"container/list"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -31,22 +32,29 @@ type Session struct {
 	CSRF     string
 	created  time.Time
 	lastSeen time.Time
+
+	elAll, elMine *list.Element // positions in the store's two creation-order lists
 }
 
 // Store is an in-memory session store. A restart signs every browser out of
 // gitd (not of the IdP): they fetch a new session transparently.
 type Store struct {
-	mu       sync.Mutex
-	byID     map[string]*Session
-	Idle     time.Duration // default 30 min
-	Absolute time.Duration // default 8 h
-	PerUser  int           // most live sessions per subject (default 20)
-	Max      int           // most live sessions in all (default 100000; #6)
-	Now      func() time.Time
+	mu        sync.Mutex
+	byID      map[string]*Session
+	all       *list.List            // every session, oldest created at the front
+	bySubject map[string]*list.List // each subject's sessions, same order
+	steps     int                   // sessions evicted by Create (a test counter: O(1) each)
+	Idle      time.Duration         // default 30 min
+	Absolute  time.Duration         // default 8 h
+	PerUser   int                   // most live sessions per subject (default 8; #8)
+	Max       int                   // most live sessions in all (default 100000; #6)
+	Now       func() time.Time
 }
 
 // New returns an empty store.
-func New() *Store { return &Store{byID: map[string]*Session{}} }
+func New() *Store {
+	return &Store{byID: map[string]*Session{}, all: list.New(), bySubject: map[string]*list.List{}}
+}
 
 func (s *Store) now() time.Time {
 	if s.Now != nil {
@@ -72,7 +80,7 @@ func (s *Store) limits() (time.Duration, time.Duration, int) {
 		abs = 8 * time.Hour
 	}
 	if per <= 0 {
-		per = 20
+		per = 8
 	}
 	return idle, abs, per
 }
@@ -84,43 +92,44 @@ func (s *Store) Create(subject string) *Session {
 	defer s.mu.Unlock()
 	_, _, per := s.limits()
 	now := s.now()
-	var mine []*Session
-	for _, x := range s.byID {
-		if x.Subject == subject {
-			mine = append(mine, x)
-		}
+	// go-slides/gitd#8: a subject over its own bound loses ITS oldest session
+	// (never another subject's), and the overall cap drops the globally
+	// oldest: both are the front of a list kept in creation order, O(1).
+	mine := s.bySubject[subject]
+	for mine != nil && mine.Len() >= per {
+		s.steps++
+		s.removeLocked(mine.Front().Value.(*Session))
 	}
-	for len(mine) >= per {
-		oldest := 0
-		for i, x := range mine {
-			if x.created.Before(mine[oldest].created) {
-				oldest = i
-			}
-		}
-		delete(s.byID, mine[oldest].ID)
-		mine = append(mine[:oldest], mine[oldest+1:]...)
-	}
-	// the overall cap: past it, the sweep first, then the oldest sessions go
 	max := s.Max
 	if max <= 0 {
 		max = 100000
 	}
-	if len(s.byID) >= max {
-		s.sweepLocked(now)
-	}
 	for len(s.byID) >= max {
-		var oldest *Session
-		for _, x := range s.byID {
-			if oldest == nil || x.created.Before(oldest.created) {
-				oldest = x
-			}
-		}
-		delete(s.byID, oldest.ID)
+		s.steps++
+		s.removeLocked(s.all.Front().Value.(*Session))
 	}
 	x := &Session{ID: token(), Subject: subject, CSRF: token(), created: now, lastSeen: now}
 	s.byID[x.ID] = x
+	x.elAll = s.all.PushBack(x)
+	if s.bySubject[subject] == nil {
+		s.bySubject[subject] = list.New()
+	}
+	x.elMine = s.bySubject[subject].PushBack(x)
 	cp := *x
+	cp.elAll, cp.elMine = nil, nil
 	return &cp
+}
+
+// removeLocked drops x from the map and both lists.
+func (s *Store) removeLocked(x *Session) {
+	delete(s.byID, x.ID)
+	s.all.Remove(x.elAll)
+	if l := s.bySubject[x.Subject]; l != nil {
+		l.Remove(x.elMine)
+		if l.Len() == 0 {
+			delete(s.bySubject, x.Subject)
+		}
+	}
 }
 
 // Get returns the session id for subject. A session of another subject is
@@ -133,13 +142,13 @@ func (s *Store) Get(id, subject string) (*Session, error) {
 		return nil, ErrNone
 	}
 	if subtle.ConstantTimeCompare([]byte(x.Subject), []byte(subject)) != 1 {
-		delete(s.byID, id)
+		s.removeLocked(x)
 		return nil, ErrNotYours
 	}
 	idle, abs, _ := s.limits()
 	now := s.now()
 	if now.Sub(x.lastSeen) > idle || now.Sub(x.created) > abs {
-		delete(s.byID, id)
+		s.removeLocked(x)
 		return nil, ErrExpired
 	}
 	x.lastSeen = now
@@ -166,9 +175,9 @@ func (s *Store) Sweep() int {
 func (s *Store) sweepLocked(now time.Time) int {
 	idle, abs, _ := s.limits()
 	n := 0
-	for id, x := range s.byID {
+	for _, x := range s.byID {
 		if now.Sub(x.lastSeen) > idle || now.Sub(x.created) > abs {
-			delete(s.byID, id)
+			s.removeLocked(x)
 			n++
 		}
 	}
@@ -179,7 +188,9 @@ func (s *Store) sweepLocked(now time.Time) int {
 func (s *Store) Destroy(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.byID, id)
+	if x, ok := s.byID[id]; ok {
+		s.removeLocked(x)
+	}
 }
 
 // Len is the number of live sessions (for tests and metrics).

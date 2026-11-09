@@ -27,11 +27,17 @@ func (hh *harness) logText() string {
 func TestARefusedRequestWritesABoundedAuditLine(t *testing.T) {
 	hh := newHarness(t)
 	big := strings.Repeat("A", 8<<20)
+	// no grant at all: 403 before the body is read; granted elsewhere: the
+	// body exceeds the small bound of a load (#8) and is refused as such
 	for name, c := range map[string]client{"no grant at all": hh.login("mallory"), "granted elsewhere": hh.login("alice")} {
+		want := http.StatusBadRequest
+		if c.subject == "mallory" {
+			want = http.StatusForbidden
+		}
 		before := hh.logLen()
 		w := hh.post(c, "/api/git/load", loadReq{Forge: "gitlab", Repo: big})
 		grew := hh.logLen() - before
-		if w.Code != http.StatusForbidden || grew > 1024 {
+		if w.Code != want || grew > 1024 {
 			t.Errorf("%s: status %d, the audit grew by %d bytes for one refused request", name, w.Code, grew)
 		}
 		before = hh.logLen()

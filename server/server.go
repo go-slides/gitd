@@ -180,6 +180,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": subject, "csrf": x.CSRF, "repos": s.cfg.Users[subject].Repos})
 }
 
+// smallBodyBytes bounds every request body but propose's.
+const smallBodyBytes = 4 << 10
+
 // call is what a mutating handler receives once every check has passed.
 type call struct {
 	subject, email string
@@ -228,7 +231,19 @@ func (s *Server) mutating(action string, h func(context.Context, *call, *json.De
 			fail(w, http.StatusTooManyRequests, e.Outcome)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, s.cfg.MaxBodyBytes)
+		// go-slides/gitd#8: no body is read for a subject holding no
+		// grant at all (it could not use anything in it); a granted one
+		// gets a small bound, and only propose carries a large body.
+		if len(s.cfg.Users[subject].Repos) == 0 {
+			e.Outcome = "denied"
+			fail(w, http.StatusForbidden, e.Outcome)
+			return
+		}
+		limit := s.cfg.MaxBodyBytes
+		if action != "propose" && limit > smallBodyBytes {
+			limit = smallBodyBytes
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		code, out := h(r.Context(), &call{subject: subject, email: email, entry: &e}, dec)
