@@ -164,6 +164,15 @@ Run oauth2-proxy with `--set-xauthrequest` and your IdP.
     projects only.
   - Source: [GitLab, access token scopes](https://docs.gitlab.com/security/tokens/access_token_scopes/).
 
+## Testing what sits in front of it
+
+Package `gitdtest` is the real server (sessions, CSRF, grants, the sealed vault,
+the audit) over an in-memory forge, for the tests of a playground or a proxy.
+A repository there has an owner token and answers only the token the vault
+hands over, so a server that mixed two users' credentials fails a test. It is
+for tests only: mount `Env.Handler` behind a stand-in for oauth2-proxy that
+sets `X-Auth-Request-User`, as the go-slides playground's browser suite does.
+
 ## Licence
 
 BSD-3-Clause.
