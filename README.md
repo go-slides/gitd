@@ -118,28 +118,43 @@ slides.example.org {
         reverse_proxy 127.0.0.1:4180
     }
     handle /api/git/* {
-        # never let a client choose its identity, whatever Caddy's version does
-        request_header -X-Auth-Request-User
-        request_header -X-Auth-Request-Email
-        request_header -X-Gitd-Proxy-Secret
-        forward_auth 127.0.0.1:4180 {
-            uri /oauth2/auth
-            copy_headers X-Auth-Request-User X-Auth-Request-Email
-        }
-        request_body { max_size 64MB }
-        reverse_proxy 127.0.0.1:8091 {
-            header_up X-Gitd-Proxy-Secret {file./etc/caddy/gitd-proxy.secret}
+        route {
+            # never let a client choose its identity, whatever Caddy's version does
+            request_header -X-Auth-Request-User
+            request_header -X-Auth-Request-Email
+            request_header -X-Gitd-Proxy-Secret
+            forward_auth 127.0.0.1:4180 {
+                uri /oauth2/auth
+                copy_headers X-Auth-Request-User X-Auth-Request-Email
+            }
+            request_body {
+                max_size 64MB
+            }
+            reverse_proxy 127.0.0.1:8091 {
+                header_up X-Gitd-Proxy-Secret {file./etc/caddy/gitd-proxy.secret}
+            }
         }
     }
-    handle { root * /srv/slides; file_server }
+    handle {
+        root * /srv/slides
+        file_server
+    }
 }
 ```
 
 Run oauth2-proxy with `--set-xauthrequest` and your IdP.
+- `route { }` keeps the order written. Without it, Caddy sorts the directives
+  of a `handle` by its own order, where `forward_auth` comes before
+  `request_header`: the identity `forward_auth` copied would be deleted again
+  and every call would be a 401. Do not drop the `route`, and do not drop the
+  `request_header -…` lines to "fix" a 401: that would let a client choose its
+  identity.
 - The client's own identity headers are deleted before `forward_auth` runs.
   Current Caddy also deletes a client-supplied header before `copy_headers`
   (`forwardauth/caddyfile.go`), but older versions did not, so the explicit
   `request_header -…` lines stay.
+- CI runs this exact example (extracted from this file) through Caddy v2.11.7
+  with a fake oauth2-proxy and a fake slides-gitd (`caddytest/`).
 - `{file.*}` reads the proxy secret from a file (Caddy placeholders), so it is
   not in an environment variable.
 

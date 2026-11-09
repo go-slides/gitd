@@ -54,6 +54,25 @@ jobs:
           set -- ${{ matrix.target }}
           go test -run '^$' -fuzz "^$2\$" -fuzztime 60s "$1"
 
+  # The README's Caddyfile example, extracted by the test, run through the real
+  # Caddy with a fake oauth2-proxy and a fake slides-gitd (#11). A skip fails.
+  caddy-readme:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.3"
+          cache: false
+      - name: Caddy v2.11.7
+        run: GOBIN="$RUNNER_TEMP/bin" go install github.com/caddyserver/caddy/v2/cmd/caddy@v2.11.7
+      - name: README Caddyfile identity headers (real Caddy)
+        working-directory: caddytest
+        env:
+          CADDY_BIN: ${{ runner.temp }}/bin/caddy
+          REQUIRE_CADDY: "1"
+        run: go test -count=1 -v ./...
+
   govulncheck:
     runs-on: ubuntu-latest
     steps:
