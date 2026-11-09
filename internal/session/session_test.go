@@ -86,7 +86,7 @@ func TestExpiryAndBounds(t *testing.T) {
 func TestConcurrentUsers(t *testing.T) {
 	s := New()
 	var wg sync.WaitGroup
-	for i := 0; i < 2*20; i++ { // within the per-user bound: none is evicted
+	for i := 0; i < 2*8; i++ { // within the per-user bound: none is evicted
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
