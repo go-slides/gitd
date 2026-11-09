@@ -22,11 +22,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -180,8 +182,116 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"user": subject, "csrf": x.CSRF, "repos": s.cfg.Users[subject].Repos})
 }
 
-// smallBodyBytes bounds every request body but propose's.
+// smallBodyBytes bounds what is read of a body before its grant is known
+// (go-slides/gitd#8, #12): the fields that decide the grant must lie within.
 const smallBodyBytes = 4 << 10
+
+// listBodyBytes bounds a granted load or refresh: a refresh carries one blob
+// id per file, and browsergit's default limit is 2000 files (go-slides/gitd#14).
+const listBodyBytes = 2 << 20
+
+// admitBody returns the body reader for action, bounded by what the action
+// legitimately carries. For actions whose body can be large, only the first
+// smallBodyBytes are read until the grant is decided; an ungranted subject is
+// refused there and nothing more is read.
+func (s *Server) admitBody(w http.ResponseWriter, r *http.Request, action, subject string, e *audit.Entry) (io.ReadCloser, bool) {
+	limit := s.cfg.MaxBodyBytes
+	switch action {
+	case "credential", "credential-delete":
+		limit = min(limit, vault.MaxToken+1024)
+		return http.MaxBytesReader(w, r.Body, limit), true
+	case "load", "refresh":
+		limit = min(limit, listBodyBytes)
+	}
+	prefix, err := io.ReadAll(io.LimitReader(r.Body, smallBodyBytes))
+	if err != nil {
+		e.Outcome = "bad-request"
+		fail(w, http.StatusBadRequest, e.Outcome)
+		return nil, false
+	}
+	var rest io.Reader = bytes.NewReader(prefix)
+	if len(prefix) == smallBodyBytes { // there may be more: decide the grant first
+		forgeName, repo, found := grantFields(prefix, action != "load")
+		if !found {
+			e.Outcome = "bad-request"
+			fail(w, http.StatusBadRequest, e.Outcome)
+			return nil, false
+		}
+		if !s.grant(subject, forgeName, repo) {
+			if _, ok := s.cfg.Forges[forgeName]; ok {
+				e.Forge = forgeName
+			}
+			e.Outcome = "denied"
+			fail(w, http.StatusForbidden, e.Outcome)
+			return nil, false
+		}
+		rest = io.MultiReader(rest, r.Body)
+	}
+	return http.MaxBytesReader(w, io.NopCloser(rest), limit), true
+}
+
+// grantFields scans the top-level keys of a possibly truncated JSON object
+// for the forge and the repository (the "repo" key, or "base"."repo").
+func grantFields(prefix []byte, inBase bool) (forgeName, repo string, found bool) {
+	dec := json.NewDecoder(bytes.NewReader(prefix))
+	if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+		return "", "", false
+	}
+	var haveForge, haveRepo bool
+	for dec.More() {
+		t, err := dec.Token()
+		key, isKey := t.(string)
+		if err != nil || !isKey {
+			break
+		}
+		switch {
+		case key == "forge":
+			if dec.Decode(&forgeName) != nil {
+				return "", "", false
+			}
+			haveForge = true
+		case key == "repo" && !inBase:
+			if dec.Decode(&repo) != nil {
+				return "", "", false
+			}
+			haveRepo = true
+		case key == "base" && inBase:
+			if t, err := dec.Token(); err != nil || t != json.Delim('{') {
+				return "", "", false
+			}
+			for dec.More() {
+				t, err := dec.Token()
+				k, isKey := t.(string)
+				if err != nil || !isKey {
+					return forgeName, repo, haveForge && haveRepo
+				}
+				var err2 error
+				if k == "repo" {
+					err2 = dec.Decode(&repo)
+					haveRepo = err2 == nil
+				} else {
+					var skip json.RawMessage
+					err2 = dec.Decode(&skip)
+				}
+				if err2 != nil {
+					return forgeName, repo, haveForge && haveRepo
+				}
+			}
+			if _, err := dec.Token(); err != nil {
+				break
+			}
+		default:
+			var skip json.RawMessage
+			if dec.Decode(&skip) != nil {
+				return forgeName, repo, haveForge && haveRepo
+			}
+		}
+		if haveForge && haveRepo {
+			break
+		}
+	}
+	return forgeName, repo, haveForge && haveRepo
+}
 
 // call is what a mutating handler receives once every check has passed.
 type call struct {
@@ -239,11 +349,11 @@ func (s *Server) mutating(action string, h func(context.Context, *call, *json.De
 			fail(w, http.StatusForbidden, e.Outcome)
 			return
 		}
-		limit := s.cfg.MaxBodyBytes
-		if action != "propose" && limit > smallBodyBytes {
-			limit = smallBodyBytes
+		body, ok := s.admitBody(w, r, action, subject, &e)
+		if !ok {
+			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		r.Body = body
 		dec := json.NewDecoder(r.Body)
 		dec.DisallowUnknownFields()
 		code, out := h(r.Context(), &call{subject: subject, email: email, entry: &e}, dec)
