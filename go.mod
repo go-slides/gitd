@@ -3,7 +3,7 @@ module github.com/go-slides/gitd
 go 1.27.3
 
 require (
-	github.com/go-browserhttp/browsergit v0.3.0
+	github.com/go-browserhttp/browsergit v0.4.0
 	github.com/spf13/cobra v1.10.2
 )
 
