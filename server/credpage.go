@@ -291,20 +291,13 @@ func (s *Server) handleCredentialPageSubmit(w http.ResponseWriter, r *http.Reque
 	delete(r.PostForm, "token")
 	delete(r.Form, "token")
 	defer tok.Forget()
-	if action != "store" && action != "forget" {
-		refuse(http.StatusBadRequest, "bad-request", "The form was not understood.")
-		return
-	}
-	// the token is consumed here, right or wrong: one submission per form
+	// the token is consumed here, right or wrong: one submission per form. It
+	// was issued for one forge and one of two actions, so any other is refused.
 	if !s.forms.take(s.now(), one("csrf"), subject, x.ID, forgeN, action) {
 		refuse(http.StatusForbidden, "csrf", "This form expired or was already used. Open it again from the playground.")
 		return
 	}
-	if !s.userTokenForge(subject, forgeN) {
-		e.Action = "credential"
-		refuse(http.StatusNotFound, "denied", "Nothing to do for this forge.")
-		return
-	}
+	// the forge and the grant are checked again by storeCredential, as for the API
 	var code int
 	var class, msg string
 	if action == "store" {

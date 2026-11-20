@@ -291,6 +291,29 @@ func TestPageOriginAndContentType(t *testing.T) {
 	}
 }
 
+func TestPageGrantIsCheckedAgainAtSubmission(t *testing.T) {
+	hh := newHarness(t)
+	a := hh.login("alice")
+	tk := formTokens(t, hh.getPage(a, "alice", "gitlab", nil))
+	if err := hh.srv.vault.Delete("alice", "gitlab"); err != nil {
+		t.Fatal(err)
+	}
+	hh.srv.cfg.Users["alice"] = User{} // the administrator revoked the grant
+	w := hh.submit(a, "alice", storeForm("gitlab", tk["store"], pageTok), nil)
+	if w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), "is stored") {
+		t.Fatalf("a revoked grant stored a credential: %d %s", w.Code, w.Body)
+	}
+	if _, err := hh.srv.vault.Get("alice", "gitlab"); err == nil {
+		t.Fatal("the credential is in the vault")
+	}
+	hh.logMu.Lock()
+	log := hh.log.String()
+	hh.logMu.Unlock()
+	if !strings.Contains(log, `"outcome":"denied"`) {
+		t.Fatalf("the audit must say denied:\n%s", log)
+	}
+}
+
 func TestPageNeverEchoesTheTokenNorLogsIt(t *testing.T) {
 	hh := newHarness(t)
 	a := hh.login("alice")
