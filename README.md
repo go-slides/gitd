@@ -22,6 +22,8 @@ browser ──https──▶ Caddy ── forward_auth ──▶ oauth2-proxy �
 | `GET /api/git/session` | Creates or returns this user's session. Sets `__Host-gitd` and returns the CSRF token and the repositories the user may use. |
 | `POST /api/git/credential` | Stores the user's own token for a `user-token` forge, sealed. It is never sent back. |
 | `POST /api/git/credential/delete` | Forgets it. |
+| `GET /api/git/credential/page?forge=<name>` | A page of this server, for a `user-token` forge the user is granted: a masked token field (Store) and Forget. The playground opens it in a new tab (`noopener`) so the token is typed where no script of the playground can read it. Any other forge: 404, no body. See below. |
+| `POST /api/git/credential/page` | The page's form: `application/x-www-form-urlencoded`, `forge`, `action` (`store` or `forget`), `csrf`, `token`. Answers a small result page. |
 | `POST /api/git/load` | `{forge, repo, ref, dir}` → `{files, base}` |
 | `POST /api/git/propose` | `{forge, base, files, title, body}` → `{branch, url}`. The **server** names the branch: `slides/<user>-<hash>/<title>-<time>`. |
 | `POST /api/git/refresh` | `{forge, base}` → `{files, base}` (`files` is null when nothing moved). |
@@ -50,6 +52,31 @@ Each point has a test that fails if it is broken.
   - a JSON body;
   - the session cookie (`Secure`, `HttpOnly`, `SameSite=Strict`, `__Host-`);
   - the `X-CSRF-Token` header.
+- **The credential page is isolated from the page that opens it.** Both are on
+  one origin, so the isolation is in what the page says, and each header has a
+  test:
+  - `Cross-Origin-Opener-Policy: same-origin`, so an opener has no reference;
+  - `Content-Security-Policy: default-src 'none'; style-src 'nonce-…';
+    form-action 'self'; frame-ancestors 'none'; base-uri 'none'`: no script
+    runs on it; plus `X-Frame-Options: DENY`, `Cache-Control: no-store`,
+    `Referrer-Policy: no-referrer` (the form itself says `same-origin`: a
+    browser posts `Origin: null` under `no-referrer`, and the form checks the
+    exact `Origin`);
+  - a fetch (`Sec-Fetch-Mode` other than `navigate`) is answered 404, so a
+    script cannot read the form out of the HTML;
+  - the form carries its own token, apart from `X-CSRF-Token`: random, bound to
+    the subject, the session, the forge and the action, single-use, valid five
+    minutes, at most 16 per subject;
+  - the submission needs the exact `Origin`, the content type
+    `application/x-www-form-urlencoded`, the session cookie and that token;
+  - the token goes through the same code as `POST /api/git/credential`: same
+    grant check, bounds and audit action. It is not echoed, not in a URL, not in
+    the audit.
+
+  The front must pass this route through as it does the rest of `/api/git/*`
+  and must not add or replace `Content-Security-Policy`, or the
+  `Cross-Origin-Opener-Policy`, `X-Frame-Options` and `Referrer-Policy` headers
+  for it (the Caddy example below does not).
 - **Deny by default.** A subject reaches only the `forge:owner/name` entries the
   configuration grants it.
 - **Writes only to `slides/<user>-<hash>/*`.** `<user>` is the configured slug or

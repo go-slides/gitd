@@ -66,6 +66,7 @@ type Server struct {
 	proxySecret secret.Token
 	trusted     []netip.Prefix
 	lim         *limiter
+	forms       *formStore // the credential page's single-use form tokens
 	// NewRemote builds a forge remote; tests replace it.
 	NewRemote func(fc ForgeConfig, tok secret.Token, branchPrefix string) (remote.Remote, error)
 	Now       func() time.Time
@@ -74,7 +75,7 @@ type Server struct {
 // New assembles a server.
 func New(cfg *Config, v *vault.Vault, a *audit.Log, apps map[string]*ghapp.App, proxySecret secret.Token) *Server {
 	s := &Server{cfg: cfg, vault: v, sessions: session.New(), audit: a, apps: apps, proxySecret: proxySecret,
-		lim: newLimiter(cfg.RatePerMinute, cfg.Burst)}
+		lim: newLimiter(cfg.RatePerMinute, cfg.Burst), forms: newFormStore()}
 	for _, p := range cfg.TrustedProxies {
 		s.trusted = append(s.trusted, netip.MustParsePrefix(p))
 	}
@@ -101,6 +102,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/git/session", s.handleSession)
 	mux.HandleFunc("POST /api/git/credential", s.mutating("credential", s.handleCredential))
 	mux.HandleFunc("POST /api/git/credential/delete", s.mutating("credential-delete", s.handleCredentialDelete))
+	mux.HandleFunc("GET /api/git/credential/page", s.handleCredentialPage)
+	mux.HandleFunc("POST /api/git/credential/page", s.handleCredentialPageSubmit)
 	mux.HandleFunc("POST /api/git/load", s.mutating("load", s.handleLoad))
 	mux.HandleFunc("POST /api/git/propose", s.mutating("propose", s.handlePropose))
 	mux.HandleFunc("POST /api/git/refresh", s.mutating("refresh", s.handleRefresh))
@@ -477,20 +480,31 @@ func (s *Server) handleCredential(_ context.Context, c *call, dec *json.Decoder)
 	tok := secret.New(q.Token)
 	q.Token = ""
 	defer tok.Forget()
-	fc, ok := s.cfg.Forges[q.Forge]
-	if !ok || fc.Auth != "user-token" {
-		return c.deny(http.StatusBadRequest, "no-such-forge")
-	}
-	c.entry.Forge = q.Forge // a configured name, so bounded
-	// a user with no repository on this forge has nothing to store a token for
-	// (go-slides/gitd#2): the vault takes writes from granted users only
-	if !s.grantedOn(c.subject, q.Forge) {
-		return c.deny(http.StatusForbidden, "denied")
-	}
-	if err := s.vault.Put(c.subject, q.Forge, tok); err != nil {
-		return c.deny(http.StatusBadRequest, "refused")
+	if code, class := s.storeCredential(c.subject, q.Forge, tok, c.entry); class != "" {
+		return c.deny(code, class)
 	}
 	return http.StatusOK, map[string]any{"stored": true}
+}
+
+// storeCredential is the one path that puts a user's own token in the vault,
+// for the JSON API and for the credential page (credpage.go): the forge must be
+// a configured user-token forge, the subject granted on it, the vault's bounds
+// hold. It returns the status and class of a refusal, or "" for success.
+func (s *Server) storeCredential(subject, forgeN string, tok secret.Token, e *audit.Entry) (int, string) {
+	fc, ok := s.cfg.Forges[forgeN]
+	if !ok || fc.Auth != "user-token" {
+		return http.StatusBadRequest, "no-such-forge"
+	}
+	e.Forge = forgeN // a configured name, so bounded
+	// a user with no repository on this forge has nothing to store a token for
+	// (go-slides/gitd#2): the vault takes writes from granted users only
+	if !s.grantedOn(subject, forgeN) {
+		return http.StatusForbidden, "denied"
+	}
+	if err := s.vault.Put(subject, forgeN, tok); err != nil {
+		return http.StatusBadRequest, "refused"
+	}
+	return 0, ""
 }
 
 func (s *Server) handleCredentialDelete(_ context.Context, c *call, dec *json.Decoder) (int, any) {
@@ -500,13 +514,22 @@ func (s *Server) handleCredentialDelete(_ context.Context, c *call, dec *json.De
 	if err := dec.Decode(&q); err != nil {
 		return c.deny(http.StatusBadRequest, "bad-request")
 	}
-	if _, ok := s.cfg.Forges[q.Forge]; ok {
-		c.entry.Forge = q.Forge
-	}
-	if err := s.vault.Delete(c.subject, q.Forge); err != nil {
-		return c.deny(http.StatusBadRequest, "refused")
+	if code, class := s.forgetCredential(c.subject, q.Forge, c.entry); class != "" {
+		return c.deny(code, class)
 	}
 	return http.StatusOK, map[string]any{"deleted": true}
+}
+
+// forgetCredential is the one path that removes a user's own token, shared like
+// storeCredential.
+func (s *Server) forgetCredential(subject, forgeN string, e *audit.Entry) (int, string) {
+	if _, ok := s.cfg.Forges[forgeN]; ok {
+		e.Forge = forgeN
+	}
+	if err := s.vault.Delete(subject, forgeN); err != nil {
+		return http.StatusBadRequest, "refused"
+	}
+	return 0, ""
 }
 
 type loadReq struct {

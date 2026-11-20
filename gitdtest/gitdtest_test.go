@@ -147,3 +147,58 @@ func TestBadOptions(t *testing.T) {
 		t.Fatal("no origin")
 	}
 }
+
+func TestAUserWithNoTokenIsAnsweredWithTheCredentialPageThatStoresOne(t *testing.T) {
+	srvURL := ""
+	var env *Env
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { env.Handler.ServeHTTP(w, r) }))
+	t.Cleanup(srv.Close)
+	srvURL = srv.URL
+	env, err := New(Options{
+		Origin: srvURL, Dir: t.TempDir(),
+		Users: []User{{Subject: alice, Repos: []string{"lab/alpha"}}}, // no Token: nothing stored
+		Repos: []Repo{{Name: "lab/alpha", Token: "ALICE-TOKEN-PLACEHOLDER", Files: map[string]string{"deck.md": "# Alpha\n"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := env.user(t, srvURL, alice)
+	load := map[string]string{"forge": Forge, "repo": "lab/alpha"}
+	if code, out := a.post("/api/git/load", load); code != http.StatusPreconditionRequired || out["error"] != "no-credential" {
+		t.Fatalf("before: %d %v", code, out)
+	}
+	rsp, err := a.hc.Get(srvURL + "/api/git/credential/page?forge=" + Forge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, _ := io.ReadAll(rsp.Body)
+	rsp.Body.Close()
+	if rsp.StatusCode != 200 || rsp.Header.Get("Cross-Origin-Opener-Policy") != "same-origin" {
+		t.Fatalf("page: %d %v", rsp.StatusCode, rsp.Header)
+	}
+	i := strings.Index(string(page), `name="action" value="store"><input type="hidden" name="csrf" value="`)
+	if i < 0 {
+		t.Fatalf("no store form: %s", page)
+	}
+	rest := string(page[i+len(`name="action" value="store"><input type="hidden" name="csrf" value="`):])
+	csrf := rest[:strings.Index(rest, `"`)]
+	form := strings.NewReader("forge=" + Forge + "&action=store&csrf=" + csrf + "&token=ALICE-TOKEN-PLACEHOLDER")
+	r, _ := http.NewRequest("POST", srvURL+"/api/git/credential/page", form)
+	r.Header.Set("Origin", srvURL)
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rsp, err = a.hc.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(rsp.Body)
+	rsp.Body.Close()
+	if rsp.StatusCode != 200 || strings.Contains(string(body), "PLACEHOLDER") {
+		t.Fatalf("store: %d %s", rsp.StatusCode, body)
+	}
+	if code, out := a.post("/api/git/load", load); code != 200 || out["files"] == nil {
+		t.Fatalf("after: %d %v", code, out)
+	}
+	if strings.Contains(env.Audit(), "PLACEHOLDER") {
+		t.Fatal("the audit holds the token")
+	}
+}

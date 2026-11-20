@@ -54,7 +54,9 @@ type User struct {
 	Slug string
 	// Repos are the "owner/name" the user is granted.
 	Repos []string
-	// Token is the user's own credential, sealed in the vault.
+	// Token is the user's own credential, sealed in the vault. Empty: none is
+	// stored, and every call that needs it answers 428 no-credential until the
+	// user stores one (POST /api/git/credential, or the credential page).
 	Token string
 }
 
@@ -153,6 +155,9 @@ func New(o Options) (*Env, error) {
 		e.repos[r.Name] = &repoState{Repo: r, rev: 1, files: cloneFiles(r.Files)}
 	}
 	for _, u := range o.Users {
+		if u.Token == "" {
+			continue // no credential stored: the server answers 428 until the user stores one
+		}
 		if err := v.Put(u.Subject, Forge, secret.New(u.Token)); err != nil {
 			return nil, err
 		}
