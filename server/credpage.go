@@ -14,7 +14,8 @@ package server
 //   - Cross-Origin-Opener-Policy: same-origin, and the opener gets no reference;
 //   - a CSP with no script at all (default-src 'none', one nonce'd style),
 //     form-action 'self', frame-ancestors 'none', base-uri 'none'; X-Frame-Options
-//     DENY: the page cannot be framed, and runs nothing;
+//     DENY, no-store, no-referrer (same-origin on the form itself: see writePage):
+//     the page cannot be framed, and runs nothing;
 //   - it refuses to be fetched (Sec-Fetch-Mode other than navigate), so a script
 //     cannot read its form token out of the HTML;
 //   - the form carries its own token (formStore): random, bound to the subject,
@@ -174,6 +175,13 @@ type pageData struct {
 
 func writePage(w http.ResponseWriter, code int, d pageData) {
 	d.Nonce = pageHeaders(w)
+	if d.Forms {
+		// A form POST sent under "no-referrer" carries "Origin: null" in browsers
+		// (Fetch: serializing a request origin), so the exact-Origin check below
+		// could never pass. The form page links to nothing and loads nothing but
+		// itself: "same-origin" gives nothing away and keeps the Origin.
+		w.Header().Set("Referrer-Policy", "same-origin")
+	}
 	w.WriteHeader(code)
 	_ = pageTmpl.Execute(w, d)
 }

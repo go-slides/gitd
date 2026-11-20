@@ -72,6 +72,11 @@ func TestPageHeaders(t *testing.T) {
 	}
 	check := func(what string, w *httptest.ResponseRecorder) {
 		t.Helper()
+		// the form is "same-origin": under "no-referrer" a browser posts "Origin: null"
+		referrer := "no-referrer"
+		if what == "the form" {
+			referrer = "same-origin"
+		}
 		h := w.Header()
 		if h.Get("Cross-Origin-Opener-Policy") != "same-origin" {
 			t.Errorf("%s: COOP %q", what, h.Get("Cross-Origin-Opener-Policy"))
@@ -90,7 +95,7 @@ func TestPageHeaders(t *testing.T) {
 		if strings.Contains(strings.ToLower(w.Body.String()), "<script") {
 			t.Errorf("%s: the page has a script", what)
 		}
-		for k, v := range map[string]string{"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"} {
+		for k, v := range map[string]string{"X-Frame-Options": "DENY", "Cache-Control": "no-store", "Referrer-Policy": referrer, "X-Content-Type-Options": "nosniff"} {
 			if h.Get(k) != v {
 				t.Errorf("%s: %s is %q, want %q", what, k, h.Get(k), v)
 			}

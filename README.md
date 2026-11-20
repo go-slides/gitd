@@ -59,7 +59,9 @@ Each point has a test that fails if it is broken.
   - `Content-Security-Policy: default-src 'none'; style-src 'nonce-…';
     form-action 'self'; frame-ancestors 'none'; base-uri 'none'`: no script
     runs on it; plus `X-Frame-Options: DENY`, `Cache-Control: no-store`,
-    `Referrer-Policy: no-referrer`;
+    `Referrer-Policy: no-referrer` (the form itself says `same-origin`: a
+    browser posts `Origin: null` under `no-referrer`, and the form checks the
+    exact `Origin`);
   - a fetch (`Sec-Fetch-Mode` other than `navigate`) is answered 404, so a
     script cannot read the form out of the HTML;
   - the form carries its own token, apart from `X-CSRF-Token`: random, bound to
